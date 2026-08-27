@@ -38,7 +38,9 @@ interface SessionHarness {
 
 async function bootHandler(
   config: Config,
-  handlerOptions: Partial<Pick<McpHttpHandlerOptions, 'log' | 'maxSessions' | 'sessionTtlMs'>> = {},
+  handlerOptions: Partial<
+    Pick<McpHttpHandlerOptions, 'log' | 'maxSessions' | 'sessionTtlMs' | 'stateless'>
+  > = {},
 ): Promise<SessionHarness> {
   const contentDir = mkdtempSync(join(tmpdir(), 'ok-mcp-http-cfg-'));
   const port = await getFreeLoopbackPort();
@@ -161,6 +163,46 @@ afterEach(async () => {
 // here are no longer applicable — there is no user-facing configuration
 // surface to verify. Per-tool unit tests guard the constant being applied at
 // the call site.
+
+test('stateless MCP ignores stale session headers', async () => {
+  const config: Config = ConfigSchema.parse({});
+  const harness = await bootHandler(config, { stateless: true });
+  openHarnesses.push(harness);
+
+  const init = await fetch(`http://127.0.0.1:${harness.port}/mcp`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'stateless-probe', version: '0.0.0' },
+      },
+    }),
+  });
+  expect(init.status).toBe(200);
+  expect(init.headers.get('mcp-session-id')).toBeNull();
+
+  const tools = await fetch(`http://127.0.0.1:${harness.port}/mcp`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      'mcp-session-id': 'stale-client-session-id',
+      'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+  });
+  expect(tools.status).toBe(200);
+  const body = (await tools.json()) as { result?: { tools?: Array<{ name?: string }> } };
+  expect(body.result?.tools?.some((tool) => tool.name === 'exec')).toBe(true);
+});
 
 test('active MCP session cap refuses new sessions before allocation', async () => {
   const config: Config = ConfigSchema.parse({});

@@ -53,6 +53,7 @@ export interface McpHttpHandlerOptions {
   };
   sessionTtlMs?: number;
   maxSessions?: number;
+  stateless?: boolean;
 }
 
 export interface McpHttpHandler {
@@ -192,8 +193,42 @@ export function createMcpHttpHandler(opts: McpHttpHandlerOptions): McpHttpHandle
     session.ttlTimer.unref?.();
   }
 
+  async function handleStateless(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      writePlain(res, 400, 'Missing MCP session. Initialize with POST /mcp first.');
+      return;
+    }
+
+    const rawConnectionIdHeader = firstHeader(req.headers[MCP_CONNECTION_ID_HEADER]);
+    const forwardedConnectionId = validateAgentId(rawConnectionIdHeader) ?? undefined;
+    if (rawConnectionIdHeader !== undefined && forwardedConnectionId === undefined) {
+      opts.log?.warn?.(
+        { headerLength: rawConnectionIdHeader.length },
+        'MCP HTTP forwarded connectionId header failed validation; falling back to randomUUID',
+      );
+    }
+
+    const isHostedAgent = firstHeader(req.headers[MCP_HOSTED_AGENT_HEADER]) === '1';
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    const session = createSessionServer(opts, transport, forwardedConnectionId, isHostedAgent);
+    try {
+      await session.server.connect(transport);
+      await transport.handleRequest(req, res);
+    } finally {
+      await Promise.allSettled([session.server.close(), transport.close()]);
+    }
+  }
+
   return {
     async handle(req, res): Promise<void> {
+      if (opts.stateless) {
+        await handleStateless(req, res);
+        return;
+      }
+
       const sessionId = firstHeader(req.headers['mcp-session-id']);
       if (sessionId) {
         const session = sessions.get(sessionId);
