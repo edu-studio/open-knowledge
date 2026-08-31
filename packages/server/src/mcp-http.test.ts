@@ -164,9 +164,9 @@ afterEach(async () => {
 // surface to verify. Per-tool unit tests guard the constant being applied at
 // the call site.
 
-test('stateless MCP ignores stale session headers', async () => {
+test('HTTP MCP is stateless by default and ignores stale session headers', async () => {
   const config: Config = ConfigSchema.parse({});
-  const harness = await bootHandler(config, { stateless: true });
+  const harness = await bootHandler(config);
   openHarnesses.push(harness);
 
   const init = await fetch(`http://127.0.0.1:${harness.port}/mcp`, {

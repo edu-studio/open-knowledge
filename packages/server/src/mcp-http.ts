@@ -22,7 +22,6 @@ import { RUNTIME_VERSION } from './version-constants.ts';
 interface McpHttpSession {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
-  ttlTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface McpHttpHandlerOptions {
@@ -51,8 +50,11 @@ export interface McpHttpHandlerOptions {
     warn?: (obj: object, msg: string) => void;
     error?: (obj: object, msg: string) => void;
   };
+  /** Deprecated: HTTP MCP is stateless-only in the EDU fork. */
   sessionTtlMs?: number;
+  /** Deprecated: HTTP MCP is stateless-only in the EDU fork. */
   maxSessions?: number;
+  /** Deprecated: HTTP MCP is stateless-only in the EDU fork. */
   stateless?: boolean;
 }
 
@@ -155,44 +157,13 @@ function createSessionServer(
 }
 
 /**
- * Create a stateful Streamable HTTP MCP endpoint handler for `POST/GET/DELETE /mcp`.
+ * Create a stateless Streamable HTTP MCP endpoint handler for `POST /mcp`.
  *
  * The MCP implementation lives in the running project server. A stdio `ok mcp`
  * process should only proxy JSON-RPC frames to this endpoint; it should not
  * register tools itself.
  */
 export function createMcpHttpHandler(opts: McpHttpHandlerOptions): McpHttpHandler {
-  const sessions = new Map<string, McpHttpSession>();
-  const sessionTtlMs = opts.sessionTtlMs ?? 30 * 60 * 1000;
-  const maxSessions = opts.maxSessions ?? 100;
-
-  async function closeSession(sessionId: string, reason: string): Promise<void> {
-    const session = sessions.get(sessionId);
-    if (!session) return;
-    sessions.delete(sessionId);
-    if (session.ttlTimer !== undefined) clearTimeout(session.ttlTimer);
-    const results = await Promise.allSettled([session.server.close(), session.transport.close()]);
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        opts.log?.warn?.(
-          { err: result.reason, sessionId, reason },
-          'MCP HTTP session close failed',
-        );
-      }
-    }
-    opts.log?.info?.({ sessionId, reason }, 'MCP HTTP session closed');
-  }
-
-  function touchSession(sessionId: string, session: McpHttpSession): void {
-    if (session.ttlTimer !== undefined) clearTimeout(session.ttlTimer);
-    session.ttlTimer = setTimeout(() => {
-      void closeSession(sessionId, 'ttl-expired').catch((err) => {
-        opts.log?.warn?.({ err, sessionId }, 'MCP HTTP session TTL cleanup failed');
-      });
-    }, sessionTtlMs);
-    session.ttlTimer.unref?.();
-  }
-
   async function handleStateless(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
       writePlain(res, 400, 'Missing MCP session. Initialize with POST /mcp first.');
@@ -224,111 +195,14 @@ export function createMcpHttpHandler(opts: McpHttpHandlerOptions): McpHttpHandle
 
   return {
     async handle(req, res): Promise<void> {
-      if (opts.stateless) {
-        await handleStateless(req, res);
-        return;
-      }
-
-      const sessionId = firstHeader(req.headers['mcp-session-id']);
-      if (sessionId) {
-        const session = sessions.get(sessionId);
-        if (!session) {
-          writePlain(res, 404, 'MCP session not found');
-          return;
-        }
-        touchSession(sessionId, session);
-        await session.transport.handleRequest(req, res);
-        return;
-      }
-
-      if (req.method !== 'POST') {
-        writePlain(res, 400, 'Missing MCP session. Initialize with POST /mcp first.');
-        return;
-      }
-      if (sessions.size >= maxSessions) {
-        opts.log?.warn?.(
-          { activeSessions: sessions.size, maxSessions },
-          'MCP HTTP session cap reached',
-        );
-        writePlain(res, 503, 'Too many active MCP sessions');
-        return;
-      }
-
-      // Captured before `transport.handleRequest` consumes the request so
-      // `onsessioninitialized` (which fires after body parse) can use it.
-      // Validation goes through the same checks the keepalive WS path uses
-      // (`validateAgentId`); a header that fails validation falls back to
-      // randomUUID rather than rejecting the session, so a non-shim client
-      // that happens to send an invalid value still gets a working MCP
-      // session — it just doesn't get presence-icon stickiness.
-      const rawConnectionIdHeader = firstHeader(req.headers[MCP_CONNECTION_ID_HEADER]);
-      const forwardedConnectionId = validateAgentId(rawConnectionIdHeader) ?? undefined;
-      if (rawConnectionIdHeader !== undefined && forwardedConnectionId === undefined) {
-        // Header value is unbounded-cardinality and possibly attacker-controlled;
-        // log the length only so operators can correlate without leaking bytes.
-        opts.log?.warn?.(
-          { headerLength: rawConnectionIdHeader.length },
-          'MCP HTTP forwarded connectionId header failed validation; falling back to randomUUID',
-        );
-      }
-
-      // Only the HTTP MCP entry OK injects for an agent it hosts sets this;
-      // an external client (Cursor/Codex outside the app, an `ok start`
-      // consumer) never does and keeps the plain-URL behavior. Read per
-      // session rather than per process because one server answers both.
-      const isHostedAgent = firstHeader(req.headers[MCP_HOSTED_AGENT_HEADER]) === '1';
-
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        enableJsonResponse: true,
-        onsessioninitialized: async (newSessionId) => {
-          try {
-            const session = createSessionServer(
-              opts,
-              transport,
-              forwardedConnectionId,
-              isHostedAgent,
-            );
-            await session.server.connect(transport);
-            sessions.set(newSessionId, session);
-            touchSession(newSessionId, session);
-            opts.log?.info?.({ sessionId: newSessionId }, 'MCP HTTP session initialized');
-          } catch (err) {
-            sessions.delete(newSessionId);
-            opts.log?.error?.(
-              { err, sessionId: newSessionId },
-              'MCP HTTP session initialization failed',
-            );
-            throw err;
-          }
-        },
-      });
-
-      transport.onerror = (err) => {
-        opts.log?.warn?.({ err }, 'MCP HTTP transport error');
-      };
-      transport.onclose = () => {
-        const id = transport.sessionId;
-        if (!id) {
-          opts.log?.info?.(
-            { sessionId: id, reason: 'transport-closed' },
-            'MCP HTTP session closed',
-          );
-          return;
-        }
-        void closeSession(id, 'transport-closed').catch((err) => {
-          opts.log?.warn?.({ err, sessionId: id }, 'MCP HTTP transport-close cleanup failed');
-        });
-      };
-
-      await transport.handleRequest(req, res);
+      // EDU fork: always stateless. Stateful Streamable HTTP sessions are a
+      // footgun for cloud clients that cache dead MCP-Session-Id values.
+      await handleStateless(req, res);
     },
 
     async close(): Promise<void> {
-      const active = [...sessions.entries()];
-      await Promise.allSettled(
-        active.map(([sessionId]) => closeSession(sessionId, 'handler-close')),
-      );
+      // Stateless requests create per-request transports and close them in
+      // handleStateless(), so there is no handler-level session pool to drain.
     },
   };
 }

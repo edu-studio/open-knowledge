@@ -868,8 +868,6 @@ async function bootServerInner(opts: BootServerOptions): Promise<BootedServer> {
         getServerUrl: () => internalBaseUrl(),
         localApi: serverInstance.localApi,
         log,
-        stateless:
-          process.env.OK_MCP_STATELESS === '1' || process.env.OK_MCP_STATELESS === 'true',
       });
 
   // HTTP server — `mountMcpAndApi` installs the `/mcp` + `/api/*` request
