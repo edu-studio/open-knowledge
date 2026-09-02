@@ -255,7 +255,7 @@ export function hasValidLocalOpOrigin(req: IncomingMessage, policy?: IngressPoli
     if (
       policy.externalOrigin !== undefined &&
       url.protocol === policy.externalOrigin.protocol &&
-      normalizeOriginHost(url.host) === policy.externalOrigin.host
+      policy.externalOrigin.hostAliases.includes(normalizeOriginHost(url.host))
     ) {
       return true;
     }

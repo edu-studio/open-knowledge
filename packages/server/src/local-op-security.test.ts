@@ -743,6 +743,28 @@ describe('hasValidLocalOpOrigin with a remote public host', () => {
     expect(hasValidLocalOpOrigin(reqWithOrigin('https://myproject.ngrok.app'))).toBe(false);
   });
 
+  test('admits the default-port alias for an externalUrl that declares a port', () => {
+    const portPolicy = buildIngressPolicy({
+      serverRuntime: {
+        port: undefined,
+        bind: ['127.0.0.1'],
+        externalUrl: 'https://myproject.ngrok.app:8443',
+        externalUrlSource: 'server',
+        externalUrlFromDeprecatedKey: false,
+        allowExternal: true,
+        openBrowser: false,
+        idleShutdown: 'off',
+        loopbackOnly: true,
+      },
+    });
+    expect(hasValidLocalOpOrigin(reqWithOrigin('https://myproject.ngrok.app'), portPolicy)).toBe(
+      true,
+    );
+    expect(
+      hasValidLocalOpOrigin(reqWithOrigin('https://myproject.ngrok.app:8443'), portPolicy),
+    ).toBe(true);
+  });
+
   test('still refuses foreign origins with the tunnel policy supplied', () => {
     expect(hasValidLocalOpOrigin(reqWithOrigin('https://evil.example.com'), tunnelPolicy())).toBe(
       false,
