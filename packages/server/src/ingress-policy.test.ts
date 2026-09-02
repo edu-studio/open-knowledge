@@ -66,7 +66,11 @@ describe('buildIngressPolicy', () => {
         externalUrlSource: 'server',
       }),
     });
-    expect(explicit.externalOrigin).toEqual({ host: 'laptop.tail:55222', protocol: 'http:' });
+    expect(explicit.externalOrigin).toEqual({
+      host: 'laptop.tail:55222',
+      protocol: 'http:',
+      hostAliases: ['laptop.tail:55222', 'laptop.tail'],
+    });
     const aliased = buildIngressPolicy({
       serverRuntime: runtime({
         externalUrl: 'https://kb.example.com',
@@ -150,9 +154,11 @@ describe('isHostAdmitted — names validate in every mode, never widened by cons
     expect(isHostAdmitted('100.64.0.7', case2)).toBe(true);
   });
 
-  test('the declared externalUrl host is admitted exactly (host:port)', () => {
+  test('the declared externalUrl host is admitted with its port and default-port alias', () => {
     expect(isHostAdmitted('laptop.tail:55222', case2)).toBe(true);
-    // A different port is a different name — refused.
+    expect(isHostAdmitted('laptop.tail', case2)).toBe(true);
+    expect(isHostAdmitted('laptop.tail:80', case2)).toBe(true);
+    // A different non-default port is a different name — refused.
     expect(isHostAdmitted('laptop.tail:9999', case2)).toBe(false);
   });
 
@@ -198,7 +204,7 @@ describe('isOriginAdmitted — if present, must match; scheme-matched for extern
     expect(isOriginAdmitted('https://evil.example.com', case3)).toBe(false);
   });
 
-  test('an http externalUrl admits its http origin (tailnet/LAN posture)', () => {
+  test('an http externalUrl admits its http origin and default-port alias', () => {
     const httpPublic = buildIngressPolicy({
       serverRuntime: runtime({
         allowExternal: true,
@@ -207,6 +213,7 @@ describe('isOriginAdmitted — if present, must match; scheme-matched for extern
       }),
     });
     expect(isOriginAdmitted('http://laptop.tail:55222', httpPublic)).toBe(true);
+    expect(isOriginAdmitted('http://laptop.tail', httpPublic)).toBe(true);
     expect(isOriginAdmitted('https://laptop.tail:55222', httpPublic)).toBe(false);
   });
 

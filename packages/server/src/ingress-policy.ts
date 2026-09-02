@@ -106,7 +106,7 @@ export interface IngressPolicy {
    * ports stripped; `protocol` is `http:`/`https:`, matched exactly for
    * Origin checks since the key admits http for tailnet/LAN deployments.
    */
-  externalOrigin: { host: string; protocol: string } | undefined;
+  externalOrigin: { host: string; protocol: string; hostAliases: readonly string[] } | undefined;
   /**
    * Proxy-forwarding headers tolerated (never trusted — addressing and
    * identity stay socket/config-derived). True under consent with a declared
@@ -155,7 +155,10 @@ export function buildIngressPolicy(input: BuildIngressPolicyInput): IngressPolic
     // The schema guarantees a parseable http(s) URL; a throw here would be a
     // schema/resolver drift bug, so let it propagate loudly at boot.
     const parsed = new URL(runtime.externalUrl);
-    externalOrigin = { host: normalizeHostHeader(parsed.host), protocol: parsed.protocol };
+    const host = normalizeHostHeader(parsed.host);
+    const bareHost = parsed.hostname.toLowerCase();
+    const hostAliases = host === bareHost ? [host] : [host, bareHost];
+    externalOrigin = { host, protocol: parsed.protocol, hostAliases };
   }
 
   const allowExternal = runtime?.allowExternal === true;
@@ -202,7 +205,9 @@ export function isHostAdmitted(host: string | undefined, policy: IngressPolicy):
   }
   return (
     policy.externalOrigin !== undefined &&
-    hostHeaderMatchesExternalHost(host, policy.externalOrigin.host)
+    policy.externalOrigin.hostAliases.some((externalHost) =>
+      hostHeaderMatchesExternalHost(host, externalHost),
+    )
   );
 }
 
@@ -224,7 +229,7 @@ export function isOriginAdmitted(origin: string, policy: IngressPolicy): boolean
   if (
     policy.externalOrigin !== undefined &&
     parsed.protocol === policy.externalOrigin.protocol &&
-    normalizeHostHeader(parsed.host) === policy.externalOrigin.host
+    policy.externalOrigin.hostAliases.includes(normalizeHostHeader(parsed.host))
   ) {
     return true;
   }
